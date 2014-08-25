@@ -1,0 +1,1166 @@
+#!/usr/bin/perl
+use strict; use warnings;
+$|++;
+
+##############################################################################
+# Copyright (C) 2006 Rohan Almeida <rohan@almeida.in>
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+##############################################################################
+
+# $Id: ibmonitor,v 1.26 2006/10/13 11:37:25 arc_of_ascent Exp $
+
+use Time::HiRes qw/usleep gettimeofday tv_interval/;
+use Getopt::Long;
+use Term::ANSIColor;
+use Data::Dumper;
+
+# variables
+my $debug = 0;
+my $debug_file = 'ibmonitor-debug.log';
+my $version = '1.5';
+my $useReadKey = 0;
+my $firstpass = 1;
+my $avgpass;
+my @proc_data = ();
+my @tmp = ();
+my $clearstr = `clear`;
+my $interface = {};
+my $interfaces_all = {};
+my @interface_names = ();
+my @interface_names_copy = ();
+my %cmd_options = ();
+my ($inter, $direction);
+my $inputkey;
+my $key_mess = '';
+my $maxbytes_cnt = (2**32) - 1;
+my $start_time;
+my %colors = ();
+my %movers = ();
+my $elapsed_time;
+my $ostr;
+my $ihelp = 0;
+my $ihelp_flg = 0;
+my ($i, @index);
+my ($t0, $t1, $t0_t1);
+
+# functions
+sub print_usage();
+sub print_help();
+sub create_interface($);
+sub get_proc_data();
+sub trim($);
+sub alignstr($$$);
+sub init_interfaces_all();
+sub reset_all();
+sub debug_it($);
+sub show_help();
+sub quit_it();
+sub adjust_unit($);
+sub get_run_time($);
+sub process_userkey($);
+sub order_interfaces();
+
+# Check for installation of Term-ReadKey module
+eval q/use Term::ReadKey;/;
+if (!$@) {
+	$useReadKey = 1;
+}
+
+if ($debug) {
+	open FH, ">$debug_file" or die "Can't write $debug_file in current directory: $!";
+	close FH;
+}
+
+%colors = (
+	'max'	=> 'Red',
+	'avg'	=> 'Green',
+	'data'	=> 'Magenta',
+);
+
+%cmd_options = (
+	'bits'		=> 0,
+	'bytes'		=> 0,
+	'avg'		=> 0,
+	'max'		=> 0,
+	'interval'	=> 2, 
+	'colors'	=> 1,
+	'data'		=> 0,
+	'help'		=> 0,
+	'version'	=> 0,
+	'dev'		=> '',
+	'file'		=> '/proc/net/dev',
+);
+
+%movers = (
+	'init'	=> 0,
+	'num'	=> 0,
+	'dir'	=> 0,
+);
+
+# Parse command line options
+my $result = GetOptions (
+				'bits'			=> \$cmd_options{'bits'},
+				'bytes'			=> \$cmd_options{'bytes'},
+				'avg'			=> \$cmd_options{'avg'},
+				'max'			=> \$cmd_options{'max'},
+				'interval=i'	=> \$cmd_options{'interval'},	
+				'colors!'		=> \$cmd_options{'colors'},
+				'data'			=> \$cmd_options{'data'},
+				'help'			=> \$cmd_options{'help'},
+				'version'		=> \$cmd_options{'version'},
+				'dev=s'			=> \$cmd_options{'dev'},
+				'file=s'		=> \$cmd_options{'file'},
+);
+
+if (not $result) {
+	print_usage();
+	exit 1;
+}
+if ($cmd_options{'interval'} == 0) {
+	print STDERR "0 not allowed as interval.\n";
+	print_usage();
+	exit 1;
+}
+if (not -e $cmd_options{'file'}) {
+	print STDERR 'file '.$cmd_options{'file'}.' does not exist.'."\n";
+	print STDERR "ibmonitor requires the /proc/net/dev file.\n";
+	print STDERR "See the README file provided with ibmonitor.\n";
+	exit 1;
+}
+if (`file $cmd_options{file}` !~ /empty/) {
+	print STDERR "$cmd_options{file} does not appear to be a valid filetype\n";
+	exit 1;
+}
+if ($cmd_options{'help'}) {
+	print_help();
+	exit 1;
+}
+if ($cmd_options{'version'}) {
+	print STDERR "ibmonitor version $version\n";
+	exit 1;
+}
+if ($cmd_options{'bits'} == 0 && $cmd_options{'bytes'} == 0) {
+	$cmd_options{'bits'} = 1;
+}
+
+init_interfaces_all();
+$start_time = time();
+
+# Change to raw mode.
+# ie. Disable control keys, and enables us to read a single keystroke
+if ($useReadKey) {
+	eval q/ReadMode 'raw';/;
+}
+
+# Start the never-ending story!
+while (1) {
+
+	$ostr = sprintf $clearstr;
+
+	# print header
+	$ostr .= sprintf alignstr('Interface', 10, 'r');
+	if ($cmd_options{'bits'} == 1 && $cmd_options{'bytes'} == 1) {
+		$ostr .= sprintf alignstr('Received   ', 22, 'r');
+		$ostr .= sprintf alignstr('Sent     ', 22, 'r');
+		$ostr .= sprintf alignstr('Total     ', 22, 'r');
+		$ostr .= sprintf "\n";
+		$ostr .= sprintf alignstr(' ', 10, 'r');
+		for (1 .. 3) {
+			$ostr .= sprintf alignstr('Kbps', 12, 'r');
+			$ostr .= sprintf alignstr('KBps', 10, 'r');
+		}
+	}
+	elsif ($cmd_options{'bits'} == 1) {
+		$ostr .= sprintf alignstr('Received', 12, 'r');
+		$ostr .= sprintf alignstr('Sent', 12, 'r');
+		$ostr .= sprintf alignstr('Total', 12, 'r');
+		$ostr .= sprintf "\n";
+		$ostr .= sprintf alignstr(' ', 10, 'r');
+		for (1 .. 3) {
+			$ostr .= sprintf alignstr('Kbps', 12, 'r');
+		}
+	}
+	elsif ($cmd_options{'bytes'} == 1) {
+		$ostr .= sprintf alignstr('Received', 10, 'r');
+		$ostr .= sprintf alignstr('Sent', 10, 'r');
+		$ostr .= sprintf alignstr('Total', 10, 'r');
+		$ostr .= sprintf "\n";
+		$ostr .= sprintf alignstr(' ', 10, 'r');
+		for (1 .. 3) {
+			$ostr .= sprintf alignstr('KBps', 10, 'r');
+		}
+	}
+	$ostr .= sprintf "\n\n";
+
+	# Get data from /proc and populate interfaces hash
+	@proc_data = get_proc_data();	
+	$t0 = [gettimeofday];
+	for (@proc_data) {
+		($tmp[0], $tmp[1]) = map trim($_), split /:/;
+		# Check if user wants to see some particular interface only (ie. --dev)
+		if ($tmp[0] =~ /($cmd_options{'dev'})/) { 
+			create_interface($tmp[0]) if (not exists $interface->{$tmp[0]});
+			push @interface_names, $tmp[0] if (not grep /^$tmp[0]$/, @interface_names);
+			$interface->{$tmp[0]}{'Received'}{'New'} = (split /\s+/, $tmp[1])[0];
+			$interface->{$tmp[0]}{'Sent'}{'New'} = (split /\s+/, $tmp[1])[8];
+		}
+	}
+	foreach $inter (keys %{$interface}) {
+		delete $interface->{$inter} if (not grep /^$inter$/, @interface_names);
+	}
+	foreach $inter (@interface_names) {
+		if (not grep /^$inter$/, @interface_names_copy) {
+			push @interface_names_copy, $inter;
+		}
+	}
+
+	# Arrange interface_names array according to user sort
+	@index = ();
+	for ($i=0;$i<scalar(@interface_names_copy);$i++) {
+		if (not grep /^$interface_names_copy[$i]$/, @interface_names) {
+			push @index, $i;
+		}
+	}
+	for (@index) {
+		splice @interface_names_copy, $_, 1;
+	}
+	if (not $firstpass) {
+		@interface_names = @interface_names_copy;
+	}
+
+	if ($firstpass) {
+		for (keys %{$interface}) {
+			$interface->{$_}{'Received'}{'Old'} = $interface->{$_}{'Received'}{'New'};
+			$interface->{$_}{'Sent'}{'Old'} = $interface->{$_}{'Sent'}{'New'};
+		}
+		$firstpass = 0;
+		$avgpass = 1;
+		@interface_names = sort @interface_names;
+		if ($debug) {
+			debug_it('Inside firstpass conditional:');
+			debug_it('Interval: '.$cmd_options{'interval'});
+			debug_it(Dumper($interface->{'ppp0'}{'Received'}));
+		}
+        print $ostr;
+	}
+	else {
+
+		# reset interfaces_all hash
+		foreach $direction (keys %{$interfaces_all}) {
+			$interfaces_all->{$direction}{'Bandwidth'}{'Bps'} = 0;
+			$interfaces_all->{$direction}{'Bandwidth'}{'KBps'} = 0;
+			$interfaces_all->{$direction}{'Bandwidth'}{'Kbps'} = 0;
+		}
+				
+		foreach $inter (@interface_names) {
+			
+			foreach $direction ('Received', 'Sent') {
+				$interface->{$inter}{$direction}{'Bandwidth'}{'Bps'} = 
+					($interface->{$inter}{$direction}{'New'} - 
+					$interface->{$inter}{$direction}{'Old'}) / $cmd_options{'interval'};
+
+				# Take care of negative values obtained,
+				# due to the byte counter overflowing
+				if ($interface->{$inter}{$direction}{'Bandwidth'}{'Bps'} < 0) {
+					$interface->{$inter}{$direction}{'Bandwidth'}{'Bps'} = 
+					($maxbytes_cnt - $interface->{$inter}{$direction}{'Old'} +
+					$interface->{$inter}{$direction}{'New'}) / $cmd_options{'interval'};
+				}
+
+				# Put new into old
+				$interface->{$inter}{$direction}{'Old'} = 
+					$interface->{$inter}{$direction}{'New'};
+			}
+
+			# Calulate total of received and sent
+			$interface->{$inter}{'Total'}{'Bandwidth'}{'Bps'} = 
+				$interface->{$inter}{'Received'}{'Bandwidth'}{'Bps'} +
+				$interface->{$inter}{'Sent'}{'Bandwidth'}{'Bps'};
+
+			foreach $direction (keys %{$interface->{$inter}}) {
+				# Bandwidth in KBps
+				$interface->{$inter}{$direction}{'Bandwidth'}{'KBps'} = 
+					sprintf('%.2f', 
+					$interface->{$inter}{$direction}{'Bandwidth'}{'Bps'} / 1024);
+
+				# Max Bandwidth in KBps
+				$interface->{$inter}{$direction}{'Bandwidth'}{'Max'}{'KBps'} = 
+					sprintf( '%.2f', 
+					(
+					 $interface->{$inter}{$direction}{'Bandwidth'}{'KBps'} > 
+					 $interface->{$inter}{$direction}{'Bandwidth'}{'Max'}{'KBps'}) ?
+					 $interface->{$inter}{$direction}{'Bandwidth'}{'KBps'} :
+					 $interface->{$inter}{$direction}{'Bandwidth'}{'Max'}{'KBps'}
+					);
+
+				# Total data in KB
+				$interface->{$inter}{$direction}{'Amount'}{'KB'} =
+				sprintf('%.2f',
+				$interface->{$inter}{$direction}{'Amount'}{'KB'} +
+				$interface->{$inter}{$direction}{'Bandwidth'}{'KBps'} * 
+				$cmd_options{'interval'});
+
+				# Average bandwidth in KBps
+				$interface->{$inter}{$direction}{'Bandwidth'}{'Avg'}{'KBps'} = 
+				sprintf('%.2f',
+				$interface->{$inter}{$direction}{'Amount'}{'KB'} / get_run_time('s'));
+
+
+				# Values in Kbps
+				$interface->{$inter}{$direction}{'Bandwidth'}{'Kbps'} = 
+					sprintf('%.2f', 
+					$interface->{$inter}{$direction}{'Bandwidth'}{'KBps'} * 8);
+				$interface->{$inter}{$direction}{'Bandwidth'}{'Avg'}{'Kbps'} = 
+					sprintf('%.2f', 
+					$interface->{$inter}{$direction}{'Bandwidth'}{'Avg'}{'KBps'} * 8);
+				$interface->{$inter}{$direction}{'Bandwidth'}{'Max'}{'Kbps'} = 
+					sprintf('%.2f', 
+					$interface->{$inter}{$direction}{'Bandwidth'}{'Max'}{'KBps'} * 8);
+			}
+
+			# Sum of all interfaces
+			foreach $direction (keys %{$interfaces_all}) {
+				$interfaces_all->{$direction}{'Bandwidth'}{'KBps'} = 
+					sprintf('%.2f',
+					$interfaces_all->{$direction}{'Bandwidth'}{'KBps'} +
+					$interface->{$inter}{$direction}{'Bandwidth'}{'KBps'});
+				$interfaces_all->{$direction}{'Bandwidth'}{'Kbps'} = 
+					sprintf('%.2f',
+					$interfaces_all->{$direction}{'Bandwidth'}{'Kbps'} + 
+					$interface->{$inter}{$direction}{'Bandwidth'}{'Kbps'});
+			}
+
+			# Display the interface stats
+			$ostr .= sprintf alignstr(" $inter", 10, 'l');
+			foreach $direction (sort keys %{$interface->{$inter}}) {
+
+				# Bandwidth
+				$ostr .= sprintf alignstr(
+				$interface->{$inter}{$direction}{'Bandwidth'}{'Kbps'}, 12, 'r') 
+				if ($cmd_options{'bits'});
+				$ostr .= sprintf alignstr(
+				$interface->{$inter}{$direction}{'Bandwidth'}{'KBps'}, 10, 'r') 
+				if ($cmd_options{'bytes'});
+
+			}
+			$ostr .= sprintf "\n";
+
+			# Display the max stats
+			if ($cmd_options{'max'}) {
+				if ($cmd_options{'colors'}) {
+					$ostr .= sprintf colored alignstr('|---- Max', 10, 'r'), $colors{'max'};
+					foreach $direction (sort keys %{$interface->{$inter}}) {
+						$ostr .= sprintf colored alignstr(
+						$interface->{$inter}{$direction}{'Bandwidth'}{'Max'}{'Kbps'}, 
+						12, 'r'), $colors{'max'} if ($cmd_options{'bits'});
+						$ostr .= sprintf colored alignstr(
+						$interface->{$inter}{$direction}{'Bandwidth'}{'Max'}{'KBps'}, 
+						10, 'r'), $colors{'max'} if ($cmd_options{'bytes'});
+					}
+				} else {
+					$ostr .= sprintf alignstr('|---- Max', 10, 'r');
+					foreach $direction (sort keys %{$interface->{$inter}}) {
+						$ostr .= sprintf alignstr(
+						$interface->{$inter}{$direction}{'Bandwidth'}{'Max'}{'Kbps'}, 
+						12, 'r') if ($cmd_options{'bits'});
+						$ostr .= sprintf alignstr(
+						$interface->{$inter}{$direction}{'Bandwidth'}{'Max'}{'KBps'}, 
+						10, 'r') if ($cmd_options{'bytes'});
+					}
+				}
+				$ostr .= sprintf "\n";
+			}
+
+			# Display the avg stats
+			if ($cmd_options{'avg'}) {
+				if ($cmd_options{'colors'}) {
+					$ostr .= sprintf colored alignstr('|---- Avg', 10, 'r'), $colors{'avg'};
+					foreach $direction (sort keys %{$interface->{$inter}}) {
+						$ostr .= sprintf colored alignstr(
+						$interface->{$inter}{$direction}{'Bandwidth'}{'Avg'}{'Kbps'}, 
+						12, 'r'), $colors{'avg'} if ($cmd_options{'bits'});
+						$ostr .= sprintf colored alignstr(
+						$interface->{$inter}{$direction}{'Bandwidth'}{'Avg'}{'KBps'}, 
+						10, 'r'), $colors{'avg'} if ($cmd_options{'bytes'});
+					}
+				} else {
+					$ostr .= sprintf alignstr('|---- Avg', 10, 'r');
+					foreach $direction (sort keys %{$interface->{$inter}}) {
+						$ostr .= sprintf alignstr(
+						$interface->{$inter}{$direction}{'Bandwidth'}{'Avg'}{'Kbps'}, 
+						12, 'r') if ($cmd_options{'bits'});
+						$ostr .= sprintf alignstr(
+						$interface->{$inter}{$direction}{'Bandwidth'}{'Avg'}{'KBps'}, 
+						10, 'r') if ($cmd_options{'bytes'});
+					}
+				}
+				$ostr .= sprintf "\n";
+			}
+
+			# Display the interface data usage stats
+			if ($cmd_options{'data'}) {
+				if ($cmd_options{'colors'}) {
+					$ostr .= sprintf colored alignstr('|- Amount', 10, 'r'), $colors{'data'};
+					foreach $direction (sort keys %{$interface->{$inter}}) {
+						$ostr .= sprintf colored alignstr(
+						adjust_unit($interface->{$inter}{$direction}{'Amount'}{'KB'}), 
+						22, 'r'), $colors{'data'}
+						if ($cmd_options{'bits'} && $cmd_options{'bytes'});
+						$ostr .= sprintf colored alignstr(
+						adjust_unit($interface->{$inter}{$direction}{'Amount'}{'KB'}), 
+						12, 'r'), $colors{'data'} 
+						if ($cmd_options{'bits'} && !$cmd_options{'bytes'});
+						$ostr .= sprintf colored alignstr(
+						adjust_unit($interface->{$inter}{$direction}{'Amount'}{'KB'}), 
+						10, 'r'), $colors{'data'} 
+						if ($cmd_options{'bytes'} && !$cmd_options{'bits'});
+					}
+				} else {
+					$ostr .= sprintf alignstr('|- Amount', 10, 'r');
+					foreach $direction (sort keys %{$interface->{$inter}}) {
+						$ostr .= sprintf alignstr(
+						adjust_unit($interface->{$inter}{$direction}{'Amount'}{'KB'}), 
+						22, 'r') if ($cmd_options{'bits'} && $cmd_options{'bytes'});
+						$ostr .= sprintf alignstr(
+						adjust_unit($interface->{$inter}{$direction}{'Amount'}{'KB'}), 
+						12, 'r') if ($cmd_options{'bits'} && !$cmd_options{'bytes'});
+						$ostr .= sprintf alignstr(
+						adjust_unit($interface->{$inter}{$direction}{'Amount'}{'KB'}), 
+						10, 'r') if ($cmd_options{'bytes'} && !$cmd_options{'bits'});
+					}
+				}
+				$ostr .= sprintf "\n";
+			}
+
+			$ostr .= sprintf "\n";
+		}
+
+		# Stuff for all interfaces (interfaces_all hash)
+		foreach $direction (keys %{$interfaces_all}) {
+
+			# Total Data in KB for all interfaces
+			$interfaces_all->{$direction}{'Amount'}{'KB'} = 
+			sprintf('%.2f',
+			$interfaces_all->{$direction}{'Amount'}{'KB'} +
+			$interfaces_all->{$direction}{'Bandwidth'}{'KBps'} * 
+			$cmd_options{'interval'});
+
+			# Average data in KBps
+			$interfaces_all->{$direction}{'Bandwidth'}{'Avg'}{'KBps'} =
+			sprintf('%.2f', 		
+			$interfaces_all->{$direction}{'Amount'}{'KB'} / get_run_time('s'));
+			# Average data in Kbps
+			$interfaces_all->{$direction}{'Bandwidth'}{'Avg'}{'Kbps'} =
+			sprintf('%.2f',
+			$interfaces_all->{$direction}{'Bandwidth'}{'Avg'}{'KBps'} * 8);
+
+			# Max of all interfaces in KBps
+			$interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'KBps'} =
+				sprintf('%.2f',
+				($interfaces_all->{$direction}{'Bandwidth'}{'KBps'} > 
+				 $interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'KBps'}) ?
+				 $interfaces_all->{$direction}{'Bandwidth'}{'KBps'} :
+				 $interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'KBps'});
+			# Max of all interfaces in Kbps
+			$interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'Kbps'} =
+				sprintf('%.2f',
+				($interfaces_all->{$direction}{'Bandwidth'}{'Kbps'} > 
+				 $interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'Kbps'}) ?
+				 $interfaces_all->{$direction}{'Bandwidth'}{'Kbps'} :
+				 $interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'Kbps'});
+
+		}
+
+		# Display All Interfaces stats
+		$ostr .= sprintf alignstr(' All', 10, 'l');
+		foreach $direction (sort keys %{$interfaces_all}) {
+			$ostr .= sprintf 
+			alignstr($interfaces_all->{$direction}{'Bandwidth'}{'Kbps'}, 12, 'r') 
+			if ($cmd_options{'bits'});
+			$ostr .= sprintf 
+			alignstr($interfaces_all->{$direction}{'Bandwidth'}{'KBps'}, 10, 'r') 
+			if ($cmd_options{'bytes'});
+		}
+		$ostr .= sprintf "\n";
+
+		# Display the max of all interfaces
+		if ($cmd_options{'max'}) {
+			if ($cmd_options{'colors'}) {			
+				$ostr .= sprintf colored alignstr('|---- Max', 10, 'r'), $colors{'max'};
+				foreach $direction (sort keys %{$interfaces_all}) {
+					$ostr .= sprintf colored alignstr(
+					$interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'Kbps'}, 
+					12, 'r'), $colors{'max'} if ($cmd_options{'bits'});
+					$ostr .= sprintf colored alignstr(
+					$interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'KBps'}, 
+					10, 'r'), $colors{'max'} if ($cmd_options{'bytes'});
+				}
+			} else {
+				$ostr .= sprintf alignstr('|---- Max', 10, 'r');
+				foreach $direction (sort keys %{$interfaces_all}) {
+					$ostr .= sprintf alignstr(
+					$interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'Kbps'}, 
+					12, 'r') if ($cmd_options{'bits'});
+					$ostr .= sprintf alignstr(
+					$interfaces_all->{$direction}{'Bandwidth'}{'Max'}{'KBps'}, 
+					10, 'r') if ($cmd_options{'bytes'});
+				}
+			}
+			$ostr .= sprintf "\n";
+		}
+
+		# Display the avg of all interfaces
+		if ($cmd_options{'avg'}) {
+			if ($cmd_options{'colors'}) {
+				$ostr .= sprintf colored alignstr('|---- Avg', 10, 'r'), $colors{'avg'};
+				foreach $direction (sort keys %{$interfaces_all}) {
+					$ostr .= sprintf colored alignstr(
+					$interfaces_all->{$direction}{'Bandwidth'}{'Avg'}{'Kbps'}, 
+					12, 'r'), $colors{'avg'} if ($cmd_options{'bits'});
+					$ostr .= sprintf colored alignstr(
+					$interfaces_all->{$direction}{'Bandwidth'}{'Avg'}{'KBps'}, 
+					10, 'r'), $colors{'avg'} if ($cmd_options{'bytes'});
+				}
+			} else {
+				$ostr .= sprintf alignstr('|---- Avg', 10, 'r');
+				foreach $direction (sort keys %{$interfaces_all}) {
+					$ostr .= sprintf alignstr(
+					$interfaces_all->{$direction}{'Bandwidth'}{'Avg'}{'Kbps'}, 
+					12, 'r') if ($cmd_options{'bits'});
+					$ostr .= sprintf alignstr(
+					$interfaces_all->{$direction}{'Bandwidth'}{'Avg'}{'KBps'}, 
+					10, 'r') if ($cmd_options{'bytes'});
+				}
+			}
+			$ostr .= sprintf "\n";
+		}
+
+		# Display the interfaces_all data usage stats
+		if ($cmd_options{'data'}) {
+			if ($cmd_options{'colors'}) {
+				$ostr .= sprintf colored alignstr('|- Amount', 10, 'r'), $colors{'data'};
+				foreach $direction (sort keys %{$interfaces_all}) {
+					$ostr .= sprintf colored alignstr(
+					adjust_unit($interfaces_all->{$direction}{'Amount'}{'KB'}), 22, 'r'),
+					$colors{'data'} if ($cmd_options{'bits'} && $cmd_options{'bytes'});
+					$ostr .= sprintf colored alignstr(
+					adjust_unit($interfaces_all->{$direction}{'Amount'}{'KB'}), 12, 'r'),
+					$colors{'data'} if ($cmd_options{'bits'} && !$cmd_options{'bytes'});
+					$ostr .= sprintf colored alignstr(
+					adjust_unit($interfaces_all->{$direction}{'Amount'}{'KB'}), 10, 'r'),
+					$colors{'data'} if (!$cmd_options{'bits'} && $cmd_options{'bytes'});
+				}
+			} else {
+				$ostr .= sprintf alignstr('|- Amount', 10, 'r');
+				foreach $direction (sort keys %{$interfaces_all}) {
+					$ostr .= sprintf alignstr(
+					adjust_unit($interfaces_all->{$direction}{'Amount'}{'KB'}), 22, 'r') 
+					if ($cmd_options{'bits'} && $cmd_options{'bytes'});
+					$ostr .= sprintf alignstr(
+					adjust_unit($interfaces_all->{$direction}{'Amount'}{'KB'}), 12, 'r') 
+					if ($cmd_options{'bits'} && !$cmd_options{'bytes'});
+					$ostr .= sprintf alignstr(
+					adjust_unit($interfaces_all->{$direction}{'Amount'}{'KB'}), 10, 'r') 
+					if (!$cmd_options{'bits'} && $cmd_options{'bytes'});
+				}
+			}
+			$ostr .= sprintf "\n";
+		}
+
+		$elapsed_time = get_run_time('');
+	
+		$ostr .= sprintf "\n";
+		if ($useReadKey) {
+			$ostr .= sprintf ' Press \'q\' to quit...';
+		} else {
+			$ostr .= sprintf ' Press ctrl+c to quit...';
+		}
+		$ostr .= sprintf "\t\t".'Elapsed time: '.$elapsed_time;
+		$ostr .= sprintf "\n";
+
+		if ($debug) {
+			debug_it("avgpass: $avgpass");
+			debug_it('Interval: '.$cmd_options{'interval'});
+			debug_it("elapsed_time: $elapsed_time");
+			debug_it('%interface{\'ppp0\'}{\'Received\'} DUMP:');
+			debug_it(Dumper($interface->{'ppp0'}{'Received'}));
+		}
+		
+		if ($key_mess ne '') {
+			$ostr .= sprintf "\n    $key_mess\n";
+			$key_mess = '';
+		}
+		$avgpass++;
+
+		if ($ihelp) {
+			show_help();
+		} else {
+			print $ostr;
+		}
+
+		if ($useReadKey) {
+			eval q/$inputkey = ReadKey(0.000000001);/;
+			if (defined($inputkey)) {
+				# User has pressed some key. Better process it.
+				process_userkey($inputkey);
+			}
+		}
+		
+	}
+
+	# Clear interface names
+	@interface_names_copy = @interface_names;
+	@interface_names = ();
+
+	# Sleep for interval seconds
+	$t1 = [gettimeofday];
+	$t0_t1 = tv_interval $t0, $t1;
+	if ($debug) {
+		debug_it("\$t0_t1 = $t0_t1");
+		debug_it($cmd_options{'interval'} - $t0_t1);
+	}
+	usleep (($cmd_options{'interval'} - $t0_t1) * 1000000);
+
+} # End of never-ending story! :-)
+
+sub print_usage()
+{
+	my $progname = `basename $0`;
+	chop $progname;
+
+	print STDERR "ibmonitor version $version\n";
+	print STDERR 'usage: '.$progname.' [--bits] [--bytes] [--max] [--avg] '."\n".
+			"\t\t".'[--data] [--interval n] [--colors | --nocolors] '."\n".
+			"\t\t".'[--dev regex] [--file proc] [--help] [--version]'."\n";
+}
+
+sub create_interface($)
+{
+	my $inter = shift;
+
+	for my $direction ('Received', 'Sent', 'Total') {
+
+		$interface->{$inter}{$direction}{'New'} = 0;
+		$interface->{$inter}{$direction}{'Old'} = 0;
+
+		$interface->{$inter}{$direction}{'Bandwidth'} = 
+
+									{
+										'Bps'	=>	0,
+										'KBps'	=>	0,
+										'Kbps'	=>	0,
+									};
+
+		for my $type ('Max', 'Avg') {
+
+			$interface->{$inter}{$direction}{'Bandwidth'}{$type} = 
+
+									{
+										'KBps'	=>	0,
+										'Kbps'	=>	0,
+									};
+		}
+
+		$interface->{$inter}{$direction}{'Amount'} = 
+						
+									{
+										'KB'	=> 	0,
+										'MB'	=>	0,
+										'GB'	=>	0,
+									};
+	}
+}
+
+sub init_interfaces_all()
+{
+	for my $dir ('Received', 'Sent', 'Total') {
+
+		$interfaces_all->{$dir}{'Bandwidth'} = 
+
+											{
+                                        		'Bps'   =>  0,
+                                        		'KBps'  =>  0,
+                                        		'Kbps'  =>  0,
+            								};
+
+		for my $type ('Max', 'Avg') {
+
+			$interfaces_all->{$dir}{'Bandwidth'}{$type} = 
+											{
+                                        		'KBps'  =>  0,
+                                        		'Kbps'  =>  0,
+            								};
+	
+		}
+
+		$interfaces_all->{$dir}{'Amount'} = 
+											{	
+												'KB'	=>	0,
+												'MB'	=>	0,
+												'GB'	=>	0,
+											};
+	}
+}
+
+# get_proc_data
+# -------------
+#	Return array of lines from file /proc/net/dev
+#
+sub get_proc_data()
+{
+	my @arr;
+	#my $n_interfaces;
+	
+	open FH, "<$cmd_options{file}" or die "Couldn't open $cmd_options{file}!";
+	@arr = <FH>;
+	close FH;
+	splice @arr, 0, 2;
+
+	#$n_interfaces = scalar @arr;
+	#if ($n_interfaces > $num_interfaces) {
+		# An interface has been added/activated
+		
+	
+	return @arr;
+}
+
+# trim
+# ----
+#	Remove leading/trailing whitespace from string	
+#
+sub trim($)
+{
+	my $str = $_[0];
+	$str =~ s/^\s+//;
+	$str =~ s/\s+$//;
+
+	return $str;
+}
+
+# alignstr
+# --------
+#	Align the string	
+#	arguments: 
+#		1)	the string to align
+#		2)	field length
+#		3)	l -> align left
+#			m -> align center
+#			r -> align right
+#
+sub alignstr($$$)
+{
+	my ($str, $len, $pos) = @_;
+	my $ret_str;
+	my $num_spaces;
+	my $left_spaces;
+	my $right_spaces;
+
+	$num_spaces = $len - length($str);
+	if ($pos eq 'l') {
+		# left align
+		$ret_str = $str;
+		$ret_str .= ' ' x $num_spaces;
+	}
+	elsif ($pos eq 'r') {
+		# right align
+		$ret_str = ' ' x $num_spaces;
+		$ret_str .= $str;
+	}
+	elsif ($pos eq 'm') {
+		# center align
+		$left_spaces = int($num_spaces/2);
+		$right_spaces = $num_spaces - $left_spaces;
+		$ret_str = ' ' x $left_spaces;
+		$ret_str .= $str;
+		$ret_str .= ' ' x $right_spaces;
+	}
+
+	return $ret_str;
+}
+
+sub debug_it($)
+{
+	my $content = $_[0];
+
+	open FH, ">>$debug_file";
+	print FH $content."\n";
+	close FH;
+}
+
+sub show_help()
+{
+	# display list of interactive commands
+	if ($useReadKey) {
+		print $clearstr;
+
+		my $tmpstr =<<EOF;
+
+        Help Screen for Interactive Commands
+        ------------------------------------
+
+        q    ->  [q]uit
+        1-9  ->  Set sleep time interval (in seconds) to the digit entered
+        m    ->  Toggle display of [m]ax bandwidth
+        a    ->  Toggle display of [a]verage bandwidth
+        i    ->  Toggle display of values in KB[i]ts/sec (Kbps)
+        y    ->  Toggle display of values in KB[y]tes/sec (KBps)
+        d    ->  Toggle display of [d]ata transferred
+        s    ->  Shift interface up/down.
+                 This should be followed by the interface number,
+                 and then the direction (u or d)
+        r    ->  [r]eset all values
+        ?/h  ->  This help screen
+
+		Press Enter to resume monitoring...
+
+EOF
+
+		print $tmpstr;
+	}
+}
+
+sub quit_it()
+{
+	# restore terminal mode to whatever it was
+	if ($useReadKey) {
+		eval q/ReadMode 'restore';/;
+		print "\nQuitting...\n";
+		exit 0;
+	}
+}
+
+sub reset_all()
+{
+	foreach my $inter_r (keys %{$interface}) {
+		foreach my $direction (keys %{$interface->{$inter_r}}) {
+			foreach my $type ('Avg', 'Max') {
+
+				foreach my $unit 
+				(keys %{$interface->{$inter_r}{$direction}{'Bandwidth'}{$type}})
+				{
+				
+				$interface->{$inter_r}{$direction}{'Bandwidth'}{$type}{$unit} = 0;
+
+				}
+
+			}
+
+			foreach my $unit (keys %{$interface->{$inter_r}{$direction}{'Amount'}}) {
+
+				$interface->{$inter_r}{$direction}{'Amount'}{$unit} = 0;
+
+			}
+		}
+	}
+
+	foreach my $direction (keys %{$interfaces_all}) {
+		foreach my $type ('Avg', 'Max') {
+			foreach my $unit 
+			(keys %{$interfaces_all->{$direction}{'Bandwidth'}{$type}})
+			{
+			
+			$interfaces_all->{$direction}{'Bandwidth'}{$type}{$unit} = 0;
+				}
+			}
+			foreach my $unit (keys %{$interfaces_all->{$direction}{'Amount'}}) {
+				$interfaces_all->{$direction}{'Amount'}{$unit} = 0;
+			}
+	}
+
+	$avgpass = 1;
+	$start_time = time();
+}
+
+sub print_help()
+{
+	my $output;
+
+	print "\n";
+	print_usage();
+
+	# print full help with usage
+	$output =<<EOF;
+
+The following command line options (and their explanation) are available:
+
+--bits       -> Show output values in KBits/sec. This is the default.
+--bytes      -> Show output values in KBytes/sec
+--max        -> Show maximum values per interface
+--avg        -> Show average values per interface
+--interval n -> Set time interval as n seconds. The default is 2 seconds.	
+--data       -> Show data transferred in KB/MB/GB
+--colors     -> Show some fancy coloring! (This is the default)
+--nocolors   -> No fancy coloring please!
+--dev regex  -> Show output from device which matches regex
+--file proc  -> Specify which file to use in the proc filesystem  
+                for the interface byte counter
+--help       -> Show help and exit
+--version    -> Show version number and exit
+
+While the program is running, the following keys
+are recognized, which enables the user to change the output display
+format of the program.
+
+Note: ibmonitor responds directly to the single keystroke
+      ie. the 'Enter' key need not be pressed
+
+q    -> [q]uit
+1-9  -> Set sleep time interval(in seconds) to the digit entered
+m    -> Toggle display of [m]ax bandwidth
+a    -> Toggle display of [a]verage bandwidth
+i    -> Toggle display of values in KB[i]ts/sec (Kbps)
+y    -> Toggle display of values in KB[y]tes/sec (KBps)
+d    -> Toggle display of [d]ata transferred
+s    -> Shift interface up/down.
+        This should be followed by the interface number,
+        and then the direction (u or d)
+r    -> [r]eset all values
+?/h  -> help screen for interactive commands
+
+EOF
+
+	print STDERR $output;
+
+}
+
+sub adjust_unit($)
+{
+	my $amt = $_[0];
+	my $ret;
+
+	if ($amt =~ /^\d{1,3}\b\.?/) {
+		# return in KB
+		$ret = $amt.' KB';
+	}
+	elsif ($amt =~ /^\d{1,6}\b\.?/) {
+		# return in MB
+		$ret = sprintf('%.2f', ($amt / 1024)).' MB';
+	}
+	elsif ($amt =~ /^\d{1,9}\b\.?/) {
+		# return in GB
+		$ret = sprintf('%.2f', ($amt / (1024*1024))).' GB';
+	}
+
+	return $ret;
+}
+			
+sub get_run_time($)
+{
+	my $arg = shift;
+	my $nowtime = time();
+	my $diff = $nowtime - $start_time;
+	my ($sec, $min, $hour);
+	my $ret;
+
+	return $diff if ($arg eq 's');
+	$sec = $diff % 60;
+	$min = ($diff / 60) % 60;
+	$hour = ($diff / (60 * 60)) % 24;
+
+	$ret = "$hour hrs, $min mins, $sec s";
+
+	return $ret;
+}
+
+sub process_userkey($)
+{
+	my $ikey = $_[0];
+
+	if ($movers{'init'}) {
+		$movers{'num'} = $ikey;
+		$movers{'init'} = 0;
+		if ($movers{'num'} !~ /\d/) {
+			$key_mess = 'Need a number!';
+			$movers{'num'} = 0;
+		} else {
+			$key_mess = 'Interface to shift at position '.$ikey;
+		}
+	}
+	elsif ($movers{'num'}) {
+		$movers{'dir'} = $ikey;
+		order_interfaces();
+		$movers{'num'} = 0;
+		if ($movers{'dir'} eq 'u') {
+			$key_mess = 'Shifting interface up';
+		}
+		elsif ($movers{'dir'} eq 'd') {
+			$key_mess = 'Shifting interface down';
+		}
+	}
+	elsif ($ihelp_flg) {
+		if ($ikey eq "\n") {
+			$ihelp = 0;
+			$ihelp_flg = 0;
+		}
+	}
+	elsif ($ikey eq '?' || $ikey eq 'h') {
+		$ihelp = 1;
+		$ihelp_flg = 1;
+	}
+	elsif ($ikey eq 'q') {
+		quit_it();
+	}
+	elsif ($ikey eq 'm') {
+		$cmd_options{'max'} = abs($cmd_options{'max'}-1);
+		if ($cmd_options{'max'}) { 
+			$key_mess = 'm => Displaying [m]ax Bandwidth';
+		} else {
+			$key_mess = 'm => Not Displaying [m]ax Bandwidth';
+		}
+	}
+	elsif ($ikey eq 'a') {
+		$cmd_options{'avg'} = abs($cmd_options{'avg'}-1);
+		if ($cmd_options{'avg'}) {
+			$key_mess = 'a => Displaying [a]verage Bandwidth';
+		} else {
+			$key_mess = 'a => Not Displaying [a]verage Bandwidth';
+		}
+	}
+	elsif ($ikey eq 'i') {
+		$cmd_options{'bits'} = abs($cmd_options{'bits'}-1);
+		if ($cmd_options{'bits'}) {
+			$key_mess = 'i => Displaying Values in Kb[i]ts/sec (Kbps)';
+		} else {
+			$key_mess = 'i => Not Displaying Values in Kb[i]ts/sec (Kbps)';
+		}
+	}
+	elsif ($ikey eq 'y') {
+		$cmd_options{'bytes'} = abs($cmd_options{'bytes'}-1);
+		if ($cmd_options{'bytes'}) {
+			$key_mess = 'y => Displaying Values in KB[y]tes/sec (KBps)';
+		} else {
+			$key_mess = 'y => Not Displaying Values in KB[y]tes/sec (KBps)';
+		}
+	}
+	elsif ($ikey eq 'd') {
+		$cmd_options{'data'} = abs($cmd_options{'data'}-1);
+		if($cmd_options{'data'}) {
+			$key_mess = 'd => Displaying [d]ata transferred';
+		} else {
+			$key_mess = 'd => Not Displaying [d]ata transferred';
+		}
+	}
+	elsif ($ikey eq 'r') {
+		# Reset all values
+		reset_all();
+		$key_mess = 'r -> [r]esetting all values';
+	}
+	elsif ($ikey =~ /^\d$/ && $ikey != 0) {
+		# If ikey is a digit then it is an interval
+		$cmd_options{'interval'} = $ikey;
+		$key_mess = $ikey.' => Refresh interval is now ['.$ikey.'] seconds';
+	}
+	elsif ($ikey eq 's') {
+		# shift interface up/down
+		$movers{'init'} = 1;
+		$key_mess = $ikey.' => [s]hift interface up/down. Enter interface number ';
+	}	
+	else {
+		$key_mess = $ikey.' => Invalid keystroke';
+	}
+
+	# something has to be shown!
+	# resort to Kbits by default
+	$cmd_options{'bits'} = 1 if ($cmd_options{'bits'} == 0 && $cmd_options{'bytes'} == 0);
+}
+
+sub order_interfaces()
+{
+	if ($debug) {
+		debug_it('order_interfaces():');
+		debug_it('Before:');
+		debug_it('%movers DUMP:');
+		debug_it(Dumper(%movers));
+		debug_it('@interface_names DUMP:');
+		debug_it(Dumper(@interface_names));
+	}
+
+	# Check for boundary conditions
+	if (($movers{'dir'} eq 'u') && 
+		($movers{'num'} > 1) && ($movers{'num'} <= $#interface_names+1))
+	{
+		($interface_names[$movers{'num'}-2], $interface_names[$movers{'num'}-1]) =
+		($interface_names[$movers{'num'}-1], $interface_names[$movers{'num'}-2]);
+	}
+	elsif (($movers{'dir'} eq 'd') &&
+		($movers{'num'} >= 1) && ($movers{'num'} <= $#interface_names))
+	{
+		($interface_names[$movers{'num'}], $interface_names[$movers{'num'}-1]) =
+		($interface_names[$movers{'num'}-1], $interface_names[$movers{'num'}]);
+	}
+	
+	if ($debug) {
+		debug_it('order_interfaces():');
+		debug_it('After:');
+		debug_it('%movers DUMP:');
+		debug_it(Dumper(%movers));
+		debug_it('@interface_names DUMP:');
+		debug_it(Dumper(@interface_names));
+	}
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+ 
+ibmonitor - Interactive Bandwidth Monitor
+ 
+ 
+=head1 VERSION
+ 
+This documentation refers to ibmonitor version 1.5
+ 
+ 
+=head1 USAGE
+ 
+    ibmonitor [--bits] [--bytes] [--max] [--avg]
+        [--data] [--interval n] [--colors | --nocolors]
+        [--dev regex] [--file proc] [--help] [--version]
+ 
+ 
+=head1 OPTIONS
+ 
+A complete list of every available option with which the application 
+can be invoked, explaining what each does, and listing any restrictions,
+or interactions.
+ 
+If the application has no options this section may be omitted entirely.
+ 
+ 
+=head1 DESCRIPTION
+ 
+A full description of the application and its features.
+May include numerous subsections (i.e. =head2, =head3, etc.) 
+ 
+ 
+=head1 DIAGNOSTICS
+ 
+A list of every error and warning message that the application can generate
+(even the ones that will "never happen"), with a full explanation of each 
+problem, one or more likely causes, and any suggested remedies. If the
+application generates exit status codes (e.g. under Unix) then list the exit
+status associated with each error.
+ 
+ 
+=head1 CONFIGURATION AND ENVIRONMENT
+ 
+A full explanation of any configuration system(s) used by the application,
+including the names and locations of any configuration files, and the
+meaning of any environment variables or properties that can be set. These
+descriptions must also include details of any configuration language used
+  

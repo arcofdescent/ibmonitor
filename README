@@ -1,0 +1,119 @@
+
+========
+README
+========
+
+Project home page - http://ibmonitor.sourceforge.net
+On freshmeat      - http://freshmeat.net/projects/ibmonitor/
+Mailing List      - ibmonitor-user@lists.sourceforge.net
+  Visit http://lists.sourceforge.net/lists/listinfo/ibmonitor-user
+  to subscribe/unsubscribe
+Contact Author: rohan@almeida.in
+
+ABOUT
+-----
+ibmonitor is an interactive linux console application which shows 
+bandwidth consumed and total data transferred on all interfaces.
+
+Its main features are:
+  - Shows received, transmitted and total bandwidth of each interface
+  - Calculates and displays the combined value of all interfaces
+  - Displays total data transferred per interface in KB/MB/GB
+  - Bandwidth Values can be displayed in Kbits/sec(Kbps) and/or KBytes/sec(KBps)
+  - Can show maximum bandwidth consumed on each interface since start of utility
+  - Can show average bandwidth consumption on each interface since start of utility
+  - The output with all features (max, avg and display in Kbps and KBps)
+    easily fits on a 80x24 console or xterm
+  - Can interactively change its output display format depending on key
+    pressed by user.
+
+This project is different from existing similar utilities in that it can
+show the values in Kbits and Kbytes simultaneously. It also displays
+the total data transferred in KB/MB/GB dynamically shifting the unit
+to adjust available field width. Also command line switches are available 
+which allow to choose whether to display maximum and average bandwidth. 
+It will respond to certain key presses while running and can dynamically 
+change the output display format.
+eg. keypress m -> toggle view/hide max of all interfaces
+
+Future plans include, to make it display dynamic multi-colored graphs 
+per interface using svgalib, and also make it respond to signals so 
+that it can communicate its values to other programs which would 
+need such data. As an example, a web CGI script which sends a signal 
+to ibmonitor, gets the values and prints out a nicely formatted HTML page.
+(I maybe need to use rrdtool here)
+
+
+REQUIRED
+--------
+  The ibmonitor perl script requires the following perl modules:
+  1) Term::ANSIColor - Usually available with most linux distros
+  2) Term::ReadKey -needed for the "interactiveness" of ibmonitor.
+  		You can download Term::ReadKey from CPAN.
+		Just cut and paste the following link into your browser:
+		http://search.cpan.org/search?query=Term%3A%3AReadKey&mode=module
+  3) Time::HiRes - usually available with some distros
+		Otherwise, download from CPAN.
+		http://search.cpan.org/search?query=Time%3A%3AHiRes&mode=module
+	
+
+  Currently, this utility will only run on Linux distros which support
+  the /proc filesystem due to the fact that ibmonitor reads
+  the file "/proc/net/dev" for the byte counter values.
+  In case you are on a variant of UNIX(but not Linux), which supports 
+  the /proc filesystem, then you need to check with your local system expert
+  to find out which file is similar to the file "/proc/net/dev" on a
+  Linux system.
+
+  I will try to list all possible OSes here with the /proc file
+  which should get ibmonitor running on your system.
+  Any help regarding this would be much appreciated.
+  Contact me at - Rohan Romanus Almeida <arcofdescent@gmail.com>
+
+
+USAGE
+  ibmonitor is a command line program which will run
+  on a linux console or xterm (rxvt, konsole, gnome-terminal, etc)
+
+  usage: ibmonitor [--bits] [--bytes] [--max] [--avg] 
+                   [--interval n] [--data] [--colors | --nocolors] 
+                   [--dev regex] [--file proc] [--help] [--version]
+
+  The following command line options (and their explanation) are available:
+
+  --bits            -> Show output values in KBits/sec. This is the default.
+  --bytes           -> Show output values in KBytes/sec
+  --max             -> Show maximum values per interface
+  --avg             -> Show average values per interface
+  --interval n      -> Set time interval as n seconds. The default is 2 seconds.	
+  --data            -> Show data transferred in KB/MB/GB
+  --colors          -> Show some fancy coloring! This is the default
+  --nocolors        -> No fancy coloring please!
+  --dev regex       -> Show output from device matching regex
+  --file proc       -> Specify which file to use in the proc filesystem  
+                       for the interface byte counter
+  --help            -> Show help and exit
+  --version         -> Show version number and exit
+
+  While running, ibmonitor can also read the input key from the user
+  and dynamically change the output display format depending on the key
+  pressed. 
+
+  The following keys are supported. Note that ibmonitor responds directly
+  to the single keystroke. ie. 'Enter' key need not be pressed.
+  NOTE: This will only work if you have the Term::ReadKey Perl module
+        installed and working, hence the requirement.
+
+  q         -> [q]uit
+  1 - 9     -> Set sleep time interval(in seconds) to the digit entered
+  m         -> Toggle display of [m]ax bandwidth
+  a         -> Toggle display of [a]verage bandwidth
+  i         -> Toggle display of values in KB[i]ts/sec (Kbps)
+  y         -> Toggle display of values in KB[y]tes/sec (KBps)
+  d         -> Toggle display of [d]ata transferred
+  s         -> Shift interface up/down.
+               This should be followed by the interface number,
+               and then the direction (u or d)
+  r         -> [R]eset all values
+  ?/h       -> Help Screen for interactive commands
+

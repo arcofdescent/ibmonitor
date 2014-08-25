@@ -1,0 +1,110 @@
+
+* Fri Oct 13 16:54:44 IST 2006          version 1.4
+    - The header text is now displayed immediately after starting
+
+* Sun Dec 19 19:31:09 IST 2004          version 1.3 release
+    - Release of version 1.3
+
+* Sat Dec 18 00:28:52 IST 2004
+    - Sleep interval is now more accurate as we are subtracting the 
+      time taken for the code to run from it
+    - ibmonitor requires module Time::HiRes
+
+* Wed Sep 10 20:56:28 IST 2003          version 1.2 Stable Release
+    - Released version 1.2
+
+* Tue Sep  9 23:45:50 IST 2003
+    - Interfaces which come up and down frequently while
+      ibmonitor is running (like ppp0), now appear/disappear
+      accordingly.
+
+* Wed Jul 30 15:54:13 IST 2003
+    - Removed Term-ReadKey Perl module from distro.
+
+* Sun Jul 20 15:46:41 IST 2003          version 1.1 Beta Relase
+    - Release version 1.1
+    - Project is back into beta stage, since
+      work needs to be done when interfaces are added/removed,
+      while ibmonitor is running. eg. dialup (ppp0)
+
+* Fri Jul 18 20:38:36 IST 2003
+    - The interactive keys are now toggle keys.
+      Suggestion, logic and patch supplied by
+      John O'Sullivan <johno@freesoftwaresolutions.com>
+
+* Tue Jul 15 21:16:57 IST 2003
+    - Added '?' interactive key for help screen for interactive commands
+      Patch supplied by John O'Sullivan <johno@freesoftwaresolutions.com>
+    
+* Tue Jul  1 11:55:25 IST 2003          version 1.0.1
+    - Minor code cleanup
+
+* Sun Jun  8 14:53:12 IST 2003          version 1.0 (stable)
+    - Stable Release
+
+* Sat Jun  7 23:17:51 IST 2003
+    - Scrapped interface hide feature
+    - If Term-ReadKey Perl module is not found, then interactive mode is disabled
+
+* Sat May 31 15:32:10 IST 2003
+    - Choice to hide particular interface (lo, eth0, eth1, etc.), while
+      in interactive mode.
+    - Shifting of interfaces up/down BUG squashed,
+
+* Tue May 27 22:17:11 IST 2003
+    - Added debug variable and some helpful debug output.
+    - Choice to move interface display up/down relative to other interface
+    - Reset(key r while in interactive mode) is now resetting elapsed time.
+    - Average Data was incorrect, when interval was more than 1 second. Fixed.
+    - All output is written to a variable, instead of STDOUT.
+    - Almost ready for a stable release!
+
+* Thu May 22 00:35:32 IST 2003
+    - Checking intergrity of file provided on command line
+      via the --file option.
+    - Added Term-Readkey Perl module in distribution.
+        
+* Tue May 20 23:11:40 IST 2003
+    - command line option "--file proc" added.
+      This allows to specify a different /proc file, other
+      than the default, which is "/proc/net/dev"
+
+* Tue May 20 11:49:44 IST 2003
+    - command line option "--dev regex" added.
+      Patch supplied by Kanedaaa <borys@bohater.org>
+      So only interfaces which match the regex supplied will
+      be displayed.
+
+* Mon May 19 20:12:03 IST 2003          version 0.3 Beta Release
+    - Showing elapsed time since start of utility.
+
+* Sun May 18 22:46:31 IST 2003
+    - Displaying total bytes (in KB/MB/GB) transferred 
+      on each interface since start of utility.
+      The unit (KB/MB/GB) changes dynamically depending on
+      available field width.
+      --data added to command line options
+      D/d input key is recognized in interactive mode.
+    - Removed unused hash keys in interfaces and interfaces_all hash
+    - Changed the display look. The interface name is not in same
+      column as with 'Max', 'Avg', 'Amount'
+    - Amount of data stored was incorrect earlier, as it was not
+      taking into account refresh interval. Fixed.
+
+* Tue May 13 16:45:12 IST 2003
+    - When in interactive mode, after the key is pressed, 
+      a small message is displayed as to what has been changed.
+
+* Tue May  6 02:20:12 IST 2003          version 0.2 Beta Release
+
+* Mon May  5 16:44:41 IST 2003
+    - Using perl module Term::ANSIColor for aesthetic appeal!
+    - Fully interactive
+    - Squashed the bug when the interface byte count is reset to zero, 
+      which as a result the bandwidth and average values are negative
+    - all strings single quoted
+
+* Sat May  3 01:11:42 IST 2003          version 0.1 Pre-alpha Release
+    - All command line options are working
+    - The output is as expected!
+

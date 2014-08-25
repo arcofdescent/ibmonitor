@@ -1,0 +1,10 @@
+
+INSTALLATION
+------------
+
+Install the required Perl modules. See the README file for 
+more details.
+
+Just copy the ibmonitor file to a directory in your PATH. 
+A good place would be /usr/bin
+
